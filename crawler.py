@@ -11,6 +11,7 @@ import argparse
 
 ROOT_URL = 'https://news.ycombinator.com/'
 
+
 class News:
     def __init__(self, out):
         self.items = {}
@@ -24,7 +25,6 @@ class News:
                 soup = BeautifulSoup(html, "html.parser")
                 # news = soup.find_all('span', {'class': 'titleline'})
                 tr_news = soup.find_all('tr', {'class': 'athing submission'})
-                print(f'{tr_news=}')
                 for item in tr_news:
                     main_link = item.find('span', {'class': 'titleline'}, recursive=True).find('a', recursive=False)
                     if main_link:
@@ -32,10 +32,10 @@ class News:
                         comments = None
                         for lnk in links:
                             if 'comments' in lnk.text:
-                                print(lnk.text)
                                 comments = lnk.get('href')
 
                         tasks.append(self.add(main_link.text, main_link.get('href'), comments))
+                        break
 
                 await asyncio.gather(*tasks)
 
@@ -63,25 +63,38 @@ class News:
             url = url if url.startswith('http') else ROOT_URL + url
             try:
                 async with session.get(url) as response:
-                    async with aiofiles.open(os.path.join(dir_name, 'readme'), mode='w') as f:
-                        await f.write(json.dumps(item, indent='  '))
                     async with aiofiles.open(os.path.join(dir_name, 'main.html'), mode='wb') as f:
                         async for chunk in response.content.iter_chunked(8192):  # 8192 bytes per chunk
                             await f.write(chunk)
             except Exception as e:
                 print(f'Failed to process {url}. {e}')
+            await self._parse_comments(session, dir_name, item['comments'])
 
-    async def _parse_comments(self, session, url):
-        async with session.get(url) as response:
-            async with aiofiles.open(os.path.join(dir_name, 'main.html'), mode='w', encoding='utf-8') as f:
-                await f.write(await response.text())
+    async def _parse_comments(self, session, dir_name, url):
+        async with session.get(ROOT_URL + url) as response:
+            html = await response.text()
+            tasks = []
+            soup = BeautifulSoup(html, "html.parser")
+            table = soup.find('table', {'class': 'comment-tree'})
+            if table:
+                links = table.find_all('a')
+                idx = 0
+                for link in links:
+                    inner_url = link.get('href')
+                    if not inner_url.startswith('http'):
+                        continue
+                    tasks.append(self._download_comment(session, os.path.join(dir_name, f'comment_{idx}.html'), inner_url))
+                if tasks:
+                    await asyncio.gather(*tasks)
 
-    def __str__(self):
-        result = []
-        for key in self.items:
-            result.append(f'{key}: {self.items[key]}')
-        return '\n'.join(result)
-
+    async def _download_comment(self, session, dst_name, url):
+        try:
+            async with session.get(url) as response:
+                async with aiofiles.open(dst_name, mode='wb') as f:
+                    async for chunk in response.content.iter_chunked(8192):  # 8192 bytes per chunk
+                        await f.write(chunk)
+        except Exception as e:
+            print(f'Failed to process {url}. {e}')
 
 async def crawl(options):
     if not await aiofiles.ospath.isdir(options.out):
